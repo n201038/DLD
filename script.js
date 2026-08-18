@@ -48,8 +48,8 @@ function initStorage(){
           varNames: ['A','B','C'],
           ttValues: ['0','1','1','0','1','0','0','1'],
           gateMode: 'standard',
-          gate1: 'XOR',
-          gate2: 'NOT'
+          gate1: 'AND',
+          gate2: 'OR'
         },
         {
           id: 'circ_mux_2to1',
@@ -61,8 +61,8 @@ function initStorage(){
           varNames: ['A','B','S'],
           ttValues: ['0','0','0','1','1','0','1','1'],
           gateMode: 'standard',
-          gate1: 'XOR',
-          gate2: 'NOT'
+          gate1: 'AND',
+          gate2: 'OR'
         },
         {
           id: 'circ_majority',
@@ -74,8 +74,8 @@ function initStorage(){
           varNames: ['A','B','C'],
           ttValues: ['0','0','0','1','0','1','1','1'],
           gateMode: 'standard',
-          gate1: 'XOR',
-          gate2: 'NOT'
+          gate1: 'AND',
+          gate2: 'OR'
         }
       ];
       localStorage.setItem(STORAGE_KEY, JSON.stringify(starterCircuits));
@@ -109,8 +109,8 @@ function saveCircuitFile(name, folder = DEFAULT_FOLDER){
     varNames: [...state.varNames],
     ttValues: [...state.ttValues],
     gateMode: document.getElementById('gateMode')?.value || 'standard',
-    gate1: document.getElementById('gate1')?.value || 'XOR',
-    gate2: document.getElementById('gate2')?.value || 'NOT'
+    gate1: document.getElementById('gate1')?.value || 'AND',
+    gate2: document.getElementById('gate2')?.value || 'OR'
   };
 
   const idx = files.findIndex(f => f.name.toLowerCase() === cleanName.toLowerCase() && f.folder === folder);
@@ -1362,9 +1362,11 @@ function buildKmap4(container){
 // ===== SIMPLIFICATION =====
 function updateSimplification(){
   const minterms = state.ttValues.map((v, i) => v === '1' ? i : -1).filter(i => i >= 0);
+  const maxterms = state.ttValues.map((v, i) => v === '0' ? i : -1).filter(i => i >= 0);
   const dont = state.ttValues.map((v, i) => v === 'X' ? i : -1).filter(i => i >= 0);
   const standardSOP = getSOP(minterms, []);
   const simplifiedSOP = getSimplifiedSOP(minterms, dont);
+  const simplifiedPOS = getSimplifiedPOS(maxterms, dont);
   
   state.currentSOP = simplifiedSOP;
   const baseOut = document.getElementById('baseOutput');
@@ -1379,70 +1381,16 @@ function updateSimplification(){
   if(minBox){
     minBox.value = minterms.length ? ('m(' + minterms.join(',') + ')') : 'None';
   }
-  const maxterms = state.ttValues.map((v, i) => v === '0' ? i : -1).filter(i => i >= 0);
   if(maxBox){
     maxBox.value = maxterms.length ? ('M(' + maxterms.join(',') + ')') : 'None';
   }
 
-  // Converted expression
+  // Converted expression according to Boolean Algebra rules
   const mode = document.getElementById('gateMode')?.value || 'standard';
-  let conv = '0';
+  const g1 = (document.getElementById('gate1')?.value || 'AND').toUpperCase();
+  const g2 = (document.getElementById('gate2')?.value || 'OR').toUpperCase();
   
-  if(mode === 'standard') conv = simplifiedSOP;
-  else if(mode === 'nand'){
-    if(['0','1'].includes(simplifiedSOP)) conv = simplifiedSOP;
-    else {
-      let sopTerms = simplifiedSOP.split(' + ');
-      let nandTerms = sopTerms.map(t => {
-         let pt = parseTerm(t);
-         let literals = Object.keys(pt).map(k => pt[k] ? k : k + "'");
-         if (literals.length > 1) {
-             return `(${literals.join(' NAND ')})`;
-         } else {
-             let l = literals[0];
-             return `(${l.endsWith("'") ? l.slice(0, -1) : l + "'"})`;
-         }
-      });
-      if (nandTerms.length === 1) {
-         conv = `(${nandTerms[0]}) NAND 1`;
-      } else {
-         conv = nandTerms.join(' NAND ');
-      }
-    }
-  } else if(mode === 'nor'){
-    const pos = getSimplifiedPOS(maxterms, dont);
-    if(['0','1'].includes(pos)) conv = pos;
-    else {
-      let posTerms = pos.split(')(').map(t => t.replace(/[()]/g, ''));
-      let norTerms = posTerms.map(t => {
-         if (t.includes(' + ')) {
-             return `(${t.replace(/ \+ /g, ' NOR ')})`;
-         } else {
-             let l = literals[0];
-             return `(${t.endsWith("'") ? t.slice(0, -1) : t + "'"})`;
-         }
-      });
-      if (norTerms.length === 1) {
-         conv = `(${norTerms[0]}) NOR 0`;
-      } else {
-         conv = norTerms.join(' NOR ');
-      }
-    }
-  } else if(mode === 'custom') {
-    const g1 = document.getElementById('gate1')?.value?.toUpperCase() || 'XOR';
-    const g2 = document.getElementById('gate2')?.value?.toUpperCase() || 'NOT';
-    
-    let baseExp = simplifiedSOP;
-    if (g1 === 'XOR' || g1 === 'XNOR' || g2 === 'XOR' || g2 === 'XNOR') {
-        baseExp = factorParity(simplifiedSOP);
-    }
-    
-    if (baseExp !== simplifiedSOP) {
-      conv = baseExp;
-    } else {
-      conv = 'Invalid form';
-    }
-  }
+  const conv = computeConvertedExpression(simplifiedSOP, simplifiedPOS, minterms, maxterms, dont, mode, g1, g2);
 
   state.currentConverted = conv;
   const convOut = document.getElementById('convertedOutput');
@@ -1451,6 +1399,208 @@ function updateSimplification(){
   calculateCircuitDelay();
   refreshVerilogModalIfOpen();
   refreshFloatingExplanationIfOpen();
+  refreshSchematicModalIfOpen();
+}
+
+function refreshSchematicModalIfOpen(){
+  const modalBackdrop = document.getElementById('modalBackdrop');
+  if (modalBackdrop && modalBackdrop.style.display !== 'none') {
+    const svg = document.querySelector('#modalContent svg');
+    if (svg) renderAdvancedCircuit(svg);
+  }
+}
+
+// ===== BOOLEAN ALGEBRA CONVERSION ENGINE =====
+function computeConvertedExpression(simplifiedSOP, simplifiedPOS, minterms, maxterms, dont, mode, g1, g2) {
+  if (simplifiedSOP === '0' || simplifiedSOP === '1') return simplifiedSOP;
+
+  const totalVars = state.numVars;
+  const varNames = state.varNames;
+
+  // Check full parity from minterms
+  function checkFullParity() {
+    if (!minterms || minterms.length === 0) return null;
+    const expected = 2 ** (totalVars - 1);
+    if (minterms.length !== expected) return null;
+
+    let isOdd = true;
+    let isEven = true;
+    for (let m of minterms) {
+      let ones = 0;
+      for (let b = 0; b < totalVars; b++) {
+        if ((m >> b) & 1) ones++;
+      }
+      if (ones % 2 !== 1) isOdd = false;
+      if (ones % 2 !== 0) isEven = false;
+    }
+    if (isOdd) return varNames.join(' ⊕ ');
+    if (isEven) return varNames.join(' ⊙ ');
+    return null;
+  }
+
+  // 1. Standard SOP (AND-OR)
+  if (mode === 'standard') {
+    return simplifiedSOP;
+  }
+
+  // 2. Universal NAND Logic (NAND-NAND)
+  // By Involution and De Morgan's Law: Y = ((T1 + T2 + ...)' )' = ( (T1)' · (T2)' ... )'
+  if (mode === 'nand') {
+    const sopTerms = simplifiedSOP.split(' + ');
+    const nandTerms = sopTerms.map(t => {
+      const pt = parseTerm(t);
+      const lits = Object.keys(pt).map(k => pt[k] ? k : k + "'");
+      return lits.length > 1 ? `(${lits.join(' NAND ')})` : lits[0];
+    });
+
+    if (nandTerms.length === 1) {
+      return `(${nandTerms[0]}) NAND 1`;
+    } else {
+      return nandTerms.join(' NAND ');
+    }
+  }
+
+  // 3. Universal NOR Logic (NOR-NOR)
+  // From POS: Y = (S1 · S2 ...) = ( (S1)' + (S2)' ... )'
+  if (mode === 'nor') {
+    const pos = simplifiedPOS || getSimplifiedPOS(maxterms, dont);
+    if (['0', '1'].includes(pos)) return pos;
+    const posTerms = pos.split(')(').map(t => t.replace(/[()]/g, ''));
+    const norTerms = posTerms.map(t => {
+      if (t.includes(' + ')) {
+        return `(${t.replace(/ \+ /g, ' NOR ')})`;
+      } else {
+        return t.trim();
+      }
+    });
+
+    if (norTerms.length === 1) {
+      return `(${norTerms[0]}) NOR 0`;
+    } else {
+      return norTerms.join(' NOR ');
+    }
+  }
+
+  // 4. Custom Gate 1 / Gate 2 Form
+  if (mode === 'custom') {
+    g1 = (g1 || 'AND').toUpperCase();
+    g2 = (g2 || 'OR').toUpperCase();
+
+    const fullParity = checkFullParity();
+
+    // Standard SOP (AND, OR)
+    if (g1 === 'AND' && g2 === 'OR') {
+      return simplifiedSOP;
+    }
+    // Standard POS (OR, AND)
+    if (g1 === 'OR' && g2 === 'AND') {
+      return simplifiedPOS || getSimplifiedPOS(maxterms, dont);
+    }
+    // Universal NAND (NAND, NAND)
+    if (g1 === 'NAND' && g2 === 'NAND') {
+      const sopTerms = simplifiedSOP.split(' + ');
+      const nTerms = sopTerms.map(t => {
+        const pt = parseTerm(t);
+        const lits = Object.keys(pt).map(k => pt[k] ? k : k + "'");
+        return lits.length > 1 ? `(${lits.join(' NAND ')})` : lits[0];
+      });
+      return nTerms.length === 1 ? `(${nTerms[0]}) NAND 1` : nTerms.join(' NAND ');
+    }
+    // Universal NOR (NOR, NOR)
+    if (g1 === 'NOR' && g2 === 'NOR') {
+      const pos = simplifiedPOS || getSimplifiedPOS(maxterms, dont);
+      const posTerms = pos.split(')(').map(t => t.replace(/[()]/g, ''));
+      const nrTerms = posTerms.map(t => t.includes(' + ') ? `(${t.replace(/ \+ /g, ' NOR ')})` : t.trim());
+      return nrTerms.length === 1 ? `(${nrTerms[0]}) NOR 0` : nrTerms.join(' NOR ');
+    }
+    // AND-NOR (AOI form): Y = (Y')' where Y' = SOP(maxterms)
+    if (g1 === 'AND' && g2 === 'NOR') {
+      const compSOP = getSimplifiedSOP(maxterms, dont);
+      if (compSOP === '0') return '1';
+      if (compSOP === '1') return '0';
+      const cTerms = compSOP.split(' + ');
+      if (cTerms.length === 1) return `(${cTerms[0]})'`;
+      return `(${cTerms.join(' + ')})'`;
+    }
+    // OR-NAND (OAI form): Y = (Y')' where Y' = POS(maxterms)
+    if (g1 === 'OR' && g2 === 'NAND') {
+      const compPOS = getSimplifiedPOS(minterms, dont);
+      if (compPOS === '0') return '1';
+      if (compPOS === '1') return '0';
+      return `(${compPOS})'`;
+    }
+    // XOR-XOR Parity reduction
+    if (g1 === 'XOR' && (g2 === 'XOR' || g2 === 'NONE')) {
+      if (fullParity && fullParity.includes('⊕')) return fullParity;
+      const factored = factorParity(simplifiedSOP, minterms);
+      if (factored !== simplifiedSOP) return factored;
+    }
+    // XNOR-XNOR Equivalence reduction
+    if (g1 === 'XNOR' && (g2 === 'XNOR' || g2 === 'NONE')) {
+      if (fullParity && fullParity.includes('⊙')) return fullParity;
+      const factored = factorParity(simplifiedSOP, minterms);
+      if (factored !== simplifiedSOP) return factored.replace(/ ⊕ /g, ' ⊙ ');
+    }
+
+    // Parity Factoring for mixed expressions
+    let baseSOP = simplifiedSOP;
+    if (g1 === 'XOR' || g1 === 'XNOR' || g2 === 'XOR' || g2 === 'XNOR') {
+      const pf = factorParity(simplifiedSOP, minterms);
+      if (pf !== simplifiedSOP) baseSOP = pf;
+    }
+
+    // Transform individual Stage 1 terms according to g1
+    const sopTerms = baseSOP.split(' + ');
+    const s1Terms = sopTerms.map(t => {
+      if (t.includes(' ⊕ ') || t.includes(' ⊙ ')) {
+        if (g1 === 'XNOR' && t.includes(' ⊕ ')) return t.replace(/ ⊕ /g, ' ⊙ ');
+        if (g1 === 'XOR' && t.includes(' ⊙ ')) return t.replace(/ ⊙ /g, ' ⊕ ');
+        return t;
+      }
+      const pt = parseTerm(t);
+      const literals = Object.keys(pt).map(k => pt[k] ? k : k + "'");
+      
+      if (g1 === 'AND') {
+        return literals.length > 1 ? literals.join('') : literals[0];
+      } else if (g1 === 'OR') {
+        return literals.length > 1 ? `(${literals.join(' + ')})` : literals[0];
+      } else if (g1 === 'NAND') {
+        return literals.length > 1 ? `(${literals.join('·')})'` : `(${literals[0]}')`;
+      } else if (g1 === 'NOR') {
+        return literals.length > 1 ? `(${literals.join(' + ')})'` : `(${literals[0]}')`;
+      } else if (g1 === 'XOR') {
+        return literals.length > 1 ? `(${literals.join(' ⊕ ')})` : literals[0];
+      } else if (g1 === 'XNOR') {
+        return literals.length > 1 ? `(${literals.join(' ⊙ ')})` : literals[0];
+      } else if (g1 === 'NOT') {
+        return literals.length > 1 ? `(${literals.join('')})'` : `(${literals[0]}')`;
+      } else if (g1 === 'NONE') {
+        return literals.join('');
+      }
+      return literals.join('');
+    });
+
+    // Combine terms according to g2
+    if (g2 === 'NONE') {
+      return s1Terms.length === 1 ? s1Terms[0] : (s1Terms.join(', ') + '  [Stage 2: Unselected]');
+    } else if (g2 === 'OR') {
+      return s1Terms.join(' + ');
+    } else if (g2 === 'AND') {
+      return s1Terms.map(s => s.startsWith('(') ? s : `(${s})`).join(' · ');
+    } else if (g2 === 'NAND') {
+      return s1Terms.length === 1 ? `(${s1Terms[0]}) NAND 1` : s1Terms.map(s => s.startsWith('(') ? s : `(${s})`).join(' NAND ');
+    } else if (g2 === 'NOR') {
+      return s1Terms.length === 1 ? `(${s1Terms[0]}) NOR 0` : s1Terms.map(s => s.startsWith('(') ? s : `(${s})`).join(' NOR ');
+    } else if (g2 === 'XOR') {
+      return s1Terms.join(' ⊕ ');
+    } else if (g2 === 'XNOR') {
+      return s1Terms.join(' ⊙ ');
+    } else if (g2 === 'NOT') {
+      return s1Terms.length === 1 ? `(${s1Terms[0]})'` : `(${s1Terms.join(' + ')})'`;
+    }
+  }
+
+  return simplifiedSOP;
 }
 
 function getSOP(minterms, dont){
@@ -1593,8 +1743,27 @@ function parseTerm(t) {
   return res;
 }
 
-function factorParity(sop) {
+function factorParity(sop, minterms = null) {
   if (sop === '0' || sop === '1') return sop;
+  const numVars = state.numVars;
+  const varNames = state.varNames;
+
+  // Direct Truth Table Odd / Even Parity Check
+  if (minterms && minterms.length === (2 ** (numVars - 1))) {
+    let isOdd = true;
+    let isEven = true;
+    for (let m of minterms) {
+      let ones = 0;
+      for (let b = 0; b < numVars; b++) {
+        if ((m >> b) & 1) ones++;
+      }
+      if (ones % 2 !== 1) isOdd = false;
+      if (ones % 2 !== 0) isEven = false;
+    }
+    if (isOdd) return varNames.join(' ⊕ ');
+    if (isEven) return varNames.join(' ⊙ ');
+  }
+
   let terms = sop.split(' + ');
   let used = new Array(terms.length).fill(false);
   let factored = [];
@@ -1655,21 +1824,39 @@ function calculateCircuitDelay(){
     return;
   }
   const mode = document.getElementById('gateMode')?.value || 'standard';
-  let l1, l2;
+  let l1 = 0, l2 = 0;
+  let g1Name = 'AND', g2Name = 'OR';
+
   if(mode === 'nand'){
-    l1 = l2 = state.gateDelays.NAND;
+    l1 = l2 = state.gateDelays.NAND || 1.5;
+    g1Name = g2Name = 'NAND';
   } else if(mode === 'nor'){
-    l1 = l2 = state.gateDelays.NOR;
+    l1 = l2 = state.gateDelays.NOR || 1.5;
+    g1Name = g2Name = 'NOR';
   } else if(mode === 'custom'){
-    const g1 = document.getElementById('gate1')?.value || 'XOR';
-    const g2 = document.getElementById('gate2')?.value || 'NOT';
-    l1 = state.gateDelays[g1] || 2.5;
-    l2 = state.gateDelays[g2] || 2.5;
+    g1Name = (document.getElementById('gate1')?.value || 'AND').toUpperCase();
+    g2Name = (document.getElementById('gate2')?.value || 'OR').toUpperCase();
+    l1 = (g1Name === 'NONE' ? 0 : (state.gateDelays[g1Name] ?? 2.5));
+    l2 = (g2Name === 'NONE' ? 0 : (state.gateDelays[g2Name] ?? 2.5));
   } else {
-    l1 = state.gateDelays.AND;
-    l2 = state.gateDelays.OR;
+    l1 = state.gateDelays.AND || 2.5;
+    l2 = state.gateDelays.OR || 2.5;
+    g1Name = 'AND';
+    g2Name = 'OR';
   }
-  delayOut.textContent = `Critical Path Delay: ${(l1 + l2).toFixed(2)} ns (Stage1: ${l1}ns + Stage2: ${l2}ns)`;
+
+  const total = l1 + l2;
+  let delayDetail = '';
+  if (g1Name === 'NONE' && g2Name === 'NONE') {
+    delayDetail = '(Direct Pass-through: 0 ns)';
+  } else if (g2Name === 'NONE') {
+    delayDetail = `(Stage 1 [${g1Name}]: ${l1.toFixed(2)}ns | Stage 2: Unselected)`;
+  } else if (g1Name === 'NONE') {
+    delayDetail = `(Stage 1: Direct | Stage 2 [${g2Name}]: ${l2.toFixed(2)}ns)`;
+  } else {
+    delayDetail = `(Stage 1 [${g1Name}]: ${l1.toFixed(2)}ns + Stage 2 [${g2Name}]: ${l2.toFixed(2)}ns)`;
+  }
+  delayOut.textContent = `Critical Path Delay: ${total.toFixed(2)} ns ${delayDetail}`;
 }
 
 // ===== VERILOG HDL CODE GENERATOR =====
@@ -1754,27 +1941,49 @@ endmodule
       invGates = Array.from(invertedVars).map(v => `    not g_inv_${v} (not_${v}, ${v});`).join('\n') + '\n\n';
     }
 
+    const mainMode = document.getElementById('gateMode')?.value || 'standard';
+    let g1Type = 'and';
+    let g2Type = 'or';
+    if (mainMode === 'nand') { g1Type = 'nand'; g2Type = 'nand'; }
+    else if (mainMode === 'nor') { g1Type = 'nor'; g2Type = 'nor'; }
+    else if (mainMode === 'custom') {
+      const g1Val = (document.getElementById('gate1')?.value || 'AND').toLowerCase();
+      const g2Val = (document.getElementById('gate2')?.value || 'OR').toLowerCase();
+      g1Type = g1Val === 'none' ? 'buf' : g1Val;
+      g2Type = g2Val;
+    }
+
     const andWires = terms.map((_, i) => `term_${i}`);
-    let stage1Decl = `    // Stage 1: Product Term Wires\n    wire ${andWires.join(', ')};\n\n`;
+    let stage1Decl = `    // Stage 1: Term Wires\n    wire ${andWires.join(', ')};\n\n`;
     let stage1Gates = terms.map((term, i) => {
       const pt = parseTerm(term);
       const inputs = Object.keys(pt).map(k => pt[k] ? k : `not_${k}`);
       if (inputs.length === 1) {
         return `    buf g_buf_${i} (term_${i}, ${inputs[0]});`;
       }
-      return `    and g_and_${i} (term_${i}, ${inputs.join(', ')});`;
+      return `    ${g1Type} g_stage1_${i} (term_${i}, ${inputs.join(', ')});`;
     }).join('\n');
 
     let stage2Gate = '';
-    if (terms.length === 1) {
-      stage2Gate = `\n\n    // Stage 2: Direct output\n    buf g_out (Y, term_0);`;
+    if (g2Type === 'none') {
+      if (terms.length === 1) {
+        stage2Gate = `\n\n    // Stage 2: Direct output (Stage 2 Unselected)\n    assign Y = term_0;`;
+      } else {
+        stage2Gate = `\n\n    // Stage 2: Direct output (Stage 2 Unselected - Assigning primary term)\n    assign Y = term_0;`;
+      }
+    } else if (terms.length === 1) {
+      if (g2Type === 'not') {
+        stage2Gate = `\n\n    // Stage 2: Inverting NOT Gate\n    not g_out_not (Y, term_0);`;
+      } else {
+        stage2Gate = `\n\n    // Stage 2: Direct output\n    buf g_out (Y, term_0);`;
+      }
     } else {
-      stage2Gate = `\n\n    // Stage 2: Summation OR Gate\n    or g_out_or (Y, ${andWires.join(', ')});`;
+      stage2Gate = `\n\n    // Stage 2: Combiner ${g2Type.toUpperCase()} Gate\n    ${g2Type} g_out_${g2Type} (Y, ${andWires.join(', ')});`;
     }
 
     return `// ========================================================
 // Verilog HDL - Structural (Gate-Level) Model
-// Target Architecture: Inverter Rails -> AND Gates -> OR Gate
+// Target Architecture: Inverter Rails -> ${g1Type.toUpperCase()} Gates -> ${g2Type.toUpperCase()} Gate
 // Expression: Y = ${sop}
 // ========================================================
 
@@ -2401,6 +2610,7 @@ function toggleFullscreen(){
 }
 
 // ===== CIRCUIT DIAGRAM (Advanced Rendering) =====
+// ===== CIRCUIT DIAGRAM (Advanced Rendering) =====
 function renderSchematicModal(container){
   state.isVerilogModalOpen = false;
   container.style.maxHeight = '80vh';
@@ -2426,11 +2636,20 @@ function renderSchematicModal(container){
   modeSel.style.borderRadius = '6px';
   modeSel.style.border = '1px solid #e5e7eb';
   modeSel.innerHTML = `
+    <option value="converted">Target Logic (Converted / Custom)</option>
     <option value="standard">Standard SOP (AND-OR)</option>
+    <option value="pos">Standard POS (OR-AND)</option>
     <option value="nand">NAND-only</option>
     <option value="nor">NOR-only</option>
-    <option value="converted">Converted Expression</option>
   `;
+
+  const mainMode = document.getElementById('gateMode')?.value || 'standard';
+  if (mainMode === 'custom' || mainMode === 'nand' || mainMode === 'nor') {
+    modeSel.value = 'converted';
+  } else {
+    modeSel.value = 'standard';
+  }
+
   modeSel.addEventListener('change', () => {
     const svg = document.querySelector('#modalContent svg');
     if (svg) renderAdvancedCircuit(svg);
@@ -2481,16 +2700,25 @@ function renderAdvancedCircuit(svg){
   let globalStage2GateType = 'AND';
   let globalStage3GateType = 'OR';
   if (mode === 'converted') {
-    const mainMode = document.getElementById('gateMode').value;
+    const mainMode = document.getElementById('gateMode')?.value || 'standard';
     if (mainMode === 'nand') { globalStage2GateType = 'NAND'; globalStage3GateType = 'NAND'; }
     else if (mainMode === 'nor') { globalStage2GateType = 'NOR'; globalStage3GateType = 'NOR'; }
     else if (mainMode === 'custom') {
-      globalStage2GateType = document.getElementById('gate1').value.toUpperCase();
-      globalStage3GateType = document.getElementById('gate2').value.toUpperCase();
+      globalStage2GateType = (document.getElementById('gate1')?.value || 'AND').toUpperCase();
+      globalStage3GateType = (document.getElementById('gate2')?.value || 'OR').toUpperCase();
     }
+  } else if (mode === 'pos') {
+    globalStage2GateType = 'OR';
+    globalStage3GateType = 'AND';
+  } else if (mode === 'nand') {
+    globalStage2GateType = 'NAND';
+    globalStage3GateType = 'NAND';
+  } else if (mode === 'nor') {
+    globalStage2GateType = 'NOR';
+    globalStage3GateType = 'NOR';
   } else {
-    globalStage2GateType = mode === 'nor' ? 'NOR' : (mode === 'nand' ? 'NAND' : 'AND');
-    globalStage3GateType = mode === 'nor' ? 'NOR' : (mode === 'nand' ? 'NAND' : 'OR');
+    globalStage2GateType = 'AND';
+    globalStage3GateType = 'OR';
   }
 
   const defs = document.createElementNS(svgNS, 'defs');
@@ -2509,14 +2737,45 @@ function renderAdvancedCircuit(svg){
   svg.appendChild(defs);
 
   const bg = document.createElementNS(svgNS, 'rect');
-  bg.setAttribute('width', '1200');
-  bg.setAttribute('height', '700');
   bg.setAttribute('fill', 'url(#grid)');
   svg.appendChild(bg);
 
-  const terms = state.currentSOP.split(' + ').filter(t => t !== '0' && t !== '1');
+  const minterms = state.ttValues.map((v, i) => v === '1' ? i : -1).filter(i => i >= 0);
+  const maxterms = state.ttValues.map((v, i) => v === '0' ? i : -1).filter(i => i >= 0);
+  const dont = state.ttValues.map((v, i) => v === 'X' ? i : -1).filter(i => i >= 0);
 
-  if(terms.length === 0){
+  // Determine correct algebraic term list based on architecture
+  let rawTerms = [];
+  const isPosBased = (globalStage2GateType === 'OR' && globalStage3GateType === 'AND') ||
+                     (globalStage2GateType === 'NOR' && globalStage3GateType === 'NOR') ||
+                     (globalStage2GateType === 'OR' && globalStage3GateType === 'NAND') ||
+                     (globalStage2GateType === 'OR' && globalStage3GateType === 'NONE');
+
+  const isAoiBased = (globalStage2GateType === 'AND' && globalStage3GateType === 'NOR');
+
+  if (isAoiBased) {
+    const compSOP = getSimplifiedSOP(maxterms, dont);
+    rawTerms = compSOP.split(' + ').filter(t => t !== '0' && t !== '1');
+  } else if (isPosBased) {
+    const pos = (globalStage2GateType === 'OR' && globalStage3GateType === 'NAND') 
+      ? getSimplifiedPOS(minterms, dont)
+      : getSimplifiedPOS(maxterms, dont);
+    if (!['0', '1'].includes(pos)) {
+      rawTerms = pos.split(')(').map(t => t.replace(/[()]/g, '')).filter(t => t.trim().length > 0);
+    }
+  } else if (globalStage2GateType === 'XOR' || globalStage2GateType === 'XNOR') {
+    const factored = factorParity(state.currentSOP, minterms);
+    rawTerms = factored.split(' + ').filter(t => t !== '0' && t !== '1');
+  } else {
+    rawTerms = state.currentSOP.split(' + ').filter(t => t !== '0' && t !== '1');
+  }
+
+  if(rawTerms.length === 0){
+    svg.setAttribute('width', '1200');
+    svg.setAttribute('height', '700');
+    svg.setAttribute('viewBox', '0 0 1200 700');
+    bg.setAttribute('width', '1200');
+    bg.setAttribute('height', '700');
     const txt = document.createElementNS(svgNS, 'text');
     txt.setAttribute('x', '600');
     txt.setAttribute('y', '350');
@@ -2530,12 +2789,10 @@ function renderAdvancedCircuit(svg){
 
   const MARGIN_LEFT = 80;
   const MARGIN_TOP = 60;
-  const VAR_SPACING = 120;
+  const VAR_SPACING = Math.max(90, Math.min(125, 700 / state.numVars));
   const AND_GATE_X = MARGIN_LEFT + state.numVars * VAR_SPACING + 40;
-  const AND_GATE_WIDTH = 90;
-  const OR_GATE_X = AND_GATE_X + 200;
-  const OR_GATE_WIDTH = 100;
-  const OUTPUT_X = OR_GATE_X + 180;
+  const OR_GATE_X = AND_GATE_X + 220;
+  const OUTPUT_X = OR_GATE_X + 210;
 
   function addWire(x1, y1, x2, y2, color = '#64748b', width = 2){
     const line = document.createElementNS(svgNS, 'line');
@@ -2579,103 +2836,167 @@ function renderAdvancedCircuit(svg){
     const circle = document.createElementNS(svgNS, 'circle');
     circle.setAttribute('cx', x);
     circle.setAttribute('cy', y);
-    circle.setAttribute('r', '2');
+    circle.setAttribute('r', '2.5');
     circle.setAttribute('fill', color);
     circle.setAttribute('stroke', color);
     circle.setAttribute('stroke-width', '0.5');
     svg.appendChild(circle);
   }
 
+  // Pre-calculate per-term inputs, dynamic gate dimensions, and vertical positions
+  const termData = rawTerms.map((term) => {
+    const inputs = [];
+    state.varNames.forEach((v, vi) => {
+      if (term.includes(v + "'")) {
+        inputs.push({source: 'complement', varIdx: vi, color: '#f59e0b', name: v + "'"});
+      } else if (term.includes(v)) {
+        inputs.push({source: 'input', varIdx: vi, color: '#0070f3', name: v});
+      }
+    });
+    const inputCount = Math.max(1, inputs.length);
+    const pinSpacing = inputCount > 1 ? Math.max(16, Math.min(22, 110 / inputCount)) : 0;
+    const pinSpan = (inputCount - 1) * pinSpacing;
+    const halfH = Math.max(22, Math.round((pinSpan / 2) + 12));
+    const gateW = Math.max(80, Math.min(135, Math.round(62 + halfH * 0.55)));
+    return { term, inputs, inputCount, pinSpacing, pinSpan, halfH, gateW };
+  });
+
+  // Calculate cumulative vertical positions so gates never overlap
+  let currentY = MARGIN_TOP + 80;
+  const termCenterYs = [];
+  termData.forEach((td, idx) => {
+    currentY += td.halfH;
+    termCenterYs.push(currentY);
+    currentY += td.halfH + (idx < termData.length - 1 ? 26 : 0);
+  });
+
+  const totalContentHeight = Math.max(700, currentY + 90);
+  const totalContentWidth = Math.max(1200, OUTPUT_X + 170);
+
+  svg.setAttribute('width', totalContentWidth);
+  svg.setAttribute('height', totalContentHeight);
+  svg.setAttribute('viewBox', `0 0 ${totalContentWidth} ${totalContentHeight}`);
+  bg.setAttribute('width', totalContentWidth);
+  bg.setAttribute('height', totalContentHeight);
+
+  // Draw Input & Complement vertical rails
   addLabel(MARGIN_LEFT - 10, MARGIN_TOP - 25, 'INPUTS & COMPLEMENTS', 11, '#0070f3');
   const inputRails = [];
   const complementRails = [];
-  
+  const railBottomY = totalContentHeight - 45;
+
   for(let i = 0; i < state.numVars; i++){
     const inX = MARGIN_LEFT + i * VAR_SPACING;
-    const notX = inX + 25; 
-    const compX = notX + 32; 
+    const notX = inX + 22; 
+    const compX = notX + 30; 
     const y = MARGIN_TOP;
     
     addLabel(inX, y, state.varNames[i], 13, '#0070f3');
     addLabel(compX, y, state.varNames[i] + "'", 13, '#f59e0b');
     
     addThinTerminal(inX, y + 20, '#0070f3');
-    addWire(inX, y + 20, inX, 650, '#c7defa', 3);
+    addWire(inX, y + 20, inX, railBottomY, '#c7defa', 3);
     inputRails.push({x: inX, yStart: y + 20, color: '#0070f3'});
     
-    const notBranchY = y + 40;
+    const notBranchY = y + 36;
     addThinTerminal(inX, notBranchY, '#0070f3');
     addWire(inX, notBranchY, notX, notBranchY, '#c7defa', 1.5);
     
     const tri = document.createElementNS(svgNS, 'polygon');
-    tri.setAttribute('points', `${notX},${notBranchY-8} ${notX},${notBranchY+8} ${notX+18},${notBranchY}`);
+    tri.setAttribute('points', `${notX},${notBranchY-7} ${notX},${notBranchY+7} ${notX+16},${notBranchY}`);
     tri.setAttribute('fill', '#fff');
     tri.setAttribute('stroke', '#f59e0b');
     tri.setAttribute('stroke-width', '1.5');
     svg.appendChild(tri);
 
     const bubble = document.createElementNS(svgNS, 'circle');
-    bubble.setAttribute('cx', notX + 26);
+    bubble.setAttribute('cx', notX + 22);
     bubble.setAttribute('cy', notBranchY);
-    bubble.setAttribute('r', '4');
+    bubble.setAttribute('r', '3.5');
     bubble.setAttribute('fill', '#fff');
     bubble.setAttribute('stroke', '#f59e0b');
     bubble.setAttribute('stroke-width', '1.5');
     svg.appendChild(bubble);
 
     addThinTerminal(compX, notBranchY, '#f59e0b');
-    addWire(compX, notBranchY, compX, 650, '#facc15', 3);
+    addWire(compX, notBranchY, compX, railBottomY, '#facc15', 3);
     complementRails.push({x: compX, yStart: notBranchY, varIdx: i, color: '#f59e0b'});
   }
 
-  addLabel(AND_GATE_X + AND_GATE_WIDTH/2 - 10, MARGIN_TOP - 25, 'AND GATES', 10, '#0070f3');
+  // Draw Stage 1 Gates
+  const stage1Title = globalStage2GateType === 'NONE' ? 'STAGE 1: PASS-THROUGH' : `${globalStage2GateType} GATES (STAGE 1)`;
+  addLabel(AND_GATE_X + 45, MARGIN_TOP - 25, stage1Title, 10, '#0070f3');
   const andGates = [];
-  const andGateSpacing = Math.max(80, (650 - MARGIN_TOP - 40) / Math.max(1, terms.length));
 
-  terms.forEach((term, idx) => {
-    const andY = MARGIN_TOP + 80 + idx * andGateSpacing;
-    const andCenterX = AND_GATE_X + AND_GATE_WIDTH / 2;
-    const andCenterY = andY;
+  termData.forEach((td, idx) => {
+    const andCenterY = termCenterYs[idx];
+    const { inputs, inputCount, pinSpacing, pinSpan, halfH, gateW } = td;
+    const stage1GateType = globalStage2GateType;
 
-    const inputs = [];
-    state.varNames.forEach((v, vi) => {
-      if(term.includes(v + "'")){
-        inputs.push({source: 'complement', x: complementRails[vi].x, y: complementRails[vi].yStart, color: '#f59e0b', varIdx: vi});
-      } else if(term.includes(v)){
-        inputs.push({source: 'input', x: inputRails[vi].x, y: inputRails[vi].yStart, color: '#0070f3', varIdx: vi});
-      }
-    });
+    const isOrShape = ['NOR', 'OR', 'XOR', 'XNOR'].includes(stage1GateType);
+    const hasBubble = ['NOR', 'NAND', 'XNOR', 'NOT'].includes(stage1GateType);
+    const isNone = stage1GateType === 'NONE';
+    const isNot = stage1GateType === 'NOT';
 
-    const inputCount = inputs.length;
-    const pinSpacing = inputCount > 1 ? 18 : 0;
+    const backIndent = gateW * 0.22;
 
+    // Route input pins with dynamic spacing
     inputs.forEach((input, pinIdx) => {
-      const pinY = andCenterY - ((inputCount - 1) * pinSpacing / 2) + pinIdx * pinSpacing;
+      const railX = input.source === 'complement' ? complementRails[input.varIdx].x : inputRails[input.varIdx].x;
+      const pinY = andCenterY - (pinSpan / 2) + pinIdx * pinSpacing;
+      
+      let entryX = AND_GATE_X;
+      if (isOrShape) {
+        const relY = (pinY - andCenterY) / halfH;
+        entryX = AND_GATE_X + backIndent * (1 - relY * relY);
+      } else if (isNone) {
+        entryX = AND_GATE_X + 20;
+      }
+
       addOrthPath([
-        {x: input.x, y: pinY},
-        {x: AND_GATE_X - 8, y: pinY}
+        {x: railX, y: pinY},
+        {x: entryX, y: pinY}
       ], input.color, 1.5);
-      addThinTerminal(AND_GATE_X - 8, pinY, input.color);
+      addThinTerminal(entryX, pinY, input.color);
     });
 
-    const stage2GateType = globalStage2GateType;
-    const isOrShape = ['NOR', 'OR', 'XOR', 'XNOR'].includes(stage2GateType);
-    const hasBubble = ['NOR', 'NAND', 'XNOR'].includes(stage2GateType);
+    if (isNone) {
+      // Stage 1 Pass-through: direct junction
+      addThinTerminal(AND_GATE_X + 20, andCenterY, '#0070f3');
+      addLabel(AND_GATE_X + 20, andCenterY - 12, 'DIRECT', 9, '#64748b');
+    } else if (isNot) {
+      // NOT Gate
+      const tri = document.createElementNS(svgNS, 'polygon');
+      tri.setAttribute('points', `${AND_GATE_X},${andCenterY - halfH*0.75} ${AND_GATE_X},${andCenterY + halfH*0.75} ${AND_GATE_X + gateW*0.7},${andCenterY}`);
+      tri.setAttribute('fill', '#fff');
+      tri.setAttribute('stroke', '#0070f3');
+      tri.setAttribute('stroke-width', '2');
+      svg.appendChild(tri);
 
-    if (isOrShape) {
+      const bub = document.createElementNS(svgNS, 'circle');
+      bub.setAttribute('cx', AND_GATE_X + gateW*0.7 + 4);
+      bub.setAttribute('cy', andCenterY);
+      bub.setAttribute('r', '4');
+      bub.setAttribute('fill', '#fff');
+      bub.setAttribute('stroke', '#0070f3');
+      bub.setAttribute('stroke-width', '1.5');
+      svg.appendChild(bub);
+      addLabel(AND_GATE_X + gateW*0.25, andCenterY + 4, 'NOT', 10, '#0070f3');
+    } else if (isOrShape) {
+      // OR / NOR / XOR / XNOR gate with dynamic scaling
       const g = document.createElementNS(svgNS, 'path');
-      g.setAttribute('d', `M ${AND_GATE_X},${andCenterY - 20} 
-        Q ${AND_GATE_X + AND_GATE_WIDTH * 0.5},${andCenterY - 20} ${AND_GATE_X + AND_GATE_WIDTH},${andCenterY} 
-        Q ${AND_GATE_X + AND_GATE_WIDTH * 0.5},${andCenterY + 20} ${AND_GATE_X},${andCenterY + 20} 
-        Q ${AND_GATE_X + AND_GATE_WIDTH * 0.3},${andCenterY} ${AND_GATE_X},${andCenterY - 20} Z`);
+      g.setAttribute('d', `M ${AND_GATE_X},${andCenterY - halfH} 
+        Q ${AND_GATE_X + gateW * 0.5},${andCenterY - halfH} ${AND_GATE_X + gateW},${andCenterY} 
+        Q ${AND_GATE_X + gateW * 0.5},${andCenterY + halfH} ${AND_GATE_X},${andCenterY + halfH} 
+        Q ${AND_GATE_X + backIndent},${andCenterY} ${AND_GATE_X},${andCenterY - halfH} Z`);
       g.setAttribute('fill', '#fff');
       g.setAttribute('stroke', '#0070f3');
       g.setAttribute('stroke-width', '2');
       svg.appendChild(g);
       
-      if (stage2GateType === 'XOR' || stage2GateType === 'XNOR') {
+      if (stage1GateType === 'XOR' || stage1GateType === 'XNOR') {
         const curve = document.createElementNS(svgNS, 'path');
-        curve.setAttribute('d', `M ${AND_GATE_X - 6},${andCenterY - 20} Q ${AND_GATE_X + AND_GATE_WIDTH * 0.3 - 6},${andCenterY} ${AND_GATE_X - 6},${andCenterY + 20}`);
+        curve.setAttribute('d', `M ${AND_GATE_X - 7},${andCenterY - halfH} Q ${AND_GATE_X + backIndent - 7},${andCenterY} ${AND_GATE_X - 7},${andCenterY + halfH}`);
         curve.setAttribute('fill', 'none');
         curve.setAttribute('stroke', '#0070f3');
         curve.setAttribute('stroke-width', '2');
@@ -2684,7 +3005,7 @@ function renderAdvancedCircuit(svg){
 
       if (hasBubble) {
         const bub = document.createElementNS(svgNS, 'circle');
-        bub.setAttribute('cx', AND_GATE_X + AND_GATE_WIDTH + 4);
+        bub.setAttribute('cx', AND_GATE_X + gateW + 4);
         bub.setAttribute('cy', andCenterY);
         bub.setAttribute('r', '4');
         bub.setAttribute('fill', '#fff');
@@ -2692,12 +3013,16 @@ function renderAdvancedCircuit(svg){
         bub.setAttribute('stroke-width', '1.5');
         svg.appendChild(bub);
       }
+      addLabel(AND_GATE_X + gateW * 0.38, andCenterY + 4, stage1GateType, Math.max(9, Math.min(12, halfH * 0.45)), '#0070f3');
     } else {
+      // AND / NAND gate with dynamic scaling
+      const straightW = gateW * 0.45;
+      const arcW = gateW * 0.55;
       const andRect = document.createElementNS(svgNS, 'path');
-      andRect.setAttribute('d', `M ${AND_GATE_X},${andCenterY - 20} 
-        L ${AND_GATE_X + AND_GATE_WIDTH * 0.5},${andCenterY - 20} 
-        A ${AND_GATE_WIDTH * 0.5},20 0 0,1 ${AND_GATE_X + AND_GATE_WIDTH * 0.5},${andCenterY + 20} 
-        L ${AND_GATE_X},${andCenterY + 20} Z`);
+      andRect.setAttribute('d', `M ${AND_GATE_X},${andCenterY - halfH} 
+        L ${AND_GATE_X + straightW},${andCenterY - halfH} 
+        A ${arcW},${halfH} 0 0,1 ${AND_GATE_X + straightW},${andCenterY + halfH} 
+        L ${AND_GATE_X},${andCenterY + halfH} Z`);
       andRect.setAttribute('fill', '#fff');
       andRect.setAttribute('stroke', '#0070f3');
       andRect.setAttribute('stroke-width', '2');
@@ -2705,7 +3030,7 @@ function renderAdvancedCircuit(svg){
       
       if (hasBubble) {
         const bub = document.createElementNS(svgNS, 'circle');
-        bub.setAttribute('cx', AND_GATE_X + AND_GATE_WIDTH + 4);
+        bub.setAttribute('cx', AND_GATE_X + gateW + 4);
         bub.setAttribute('cy', andCenterY);
         bub.setAttribute('r', '4');
         bub.setAttribute('fill', '#fff');
@@ -2713,105 +3038,154 @@ function renderAdvancedCircuit(svg){
         bub.setAttribute('stroke-width', '1.5');
         svg.appendChild(bub);
       }
+      addLabel(AND_GATE_X + gateW * 0.38, andCenterY + 4, stage1GateType, Math.max(9, Math.min(12, halfH * 0.45)), '#0070f3');
     }
 
-    addLabel(andCenterX - 5, andCenterY + 3, stage2GateType, 10, '#0070f3');
-    const andOutActual = AND_GATE_X + AND_GATE_WIDTH + (hasBubble ? 8 : 0);
-    addThinTerminal(andOutActual + 5, andCenterY, '#16a34a');
-    addWire(andOutActual + 5, andCenterY, OR_GATE_X - 30, andCenterY, '#94a3b8', 2);
-    andGates.push({x: andOutActual + 5, y: andCenterY});
+    const gateOutActual = isNone ? (AND_GATE_X + 20) : (AND_GATE_X + (isNot ? gateW*0.7 : gateW) + (hasBubble ? 8 : 0));
+    addThinTerminal(gateOutActual + 4, andCenterY, '#16a34a');
+    andGates.push({x: gateOutActual + 4, y: andCenterY, term: td.term});
   });
 
-  const stage3GateType = globalStage3GateType;
-  addLabel(OR_GATE_X + OR_GATE_WIDTH/2 - 5, MARGIN_TOP - 25, stage3GateType + ' GATE', 10, '#10b981');
-  const orCenterY = MARGIN_TOP + 80 + ((terms.length - 1) * andGateSpacing) / 2;
-  const orCenterX = OR_GATE_X + OR_GATE_WIDTH / 2;
+  // Stage 2 Handling (Combiner Gate or Unselected/None)
+  const stage2GateType = globalStage3GateType;
+  const isStage2None = stage2GateType === 'NONE';
 
-  andGates.forEach((andOut, idx) => {
-    const lanes = Math.max(1, Math.ceil(terms.length / 2));
-    const laneY = orCenterY + (idx % lanes) * 22 - ((lanes - 1) * 22) / 2;
-    const connectX = ['NAND', 'NOT'].includes(stage3GateType) ? OR_GATE_X : OR_GATE_X + 10;
+  if (isStage2None) {
+    // Stage 2 is unselected / bypassed!
+    addLabel(OR_GATE_X + 30, MARGIN_TOP - 25, 'STAGE 2: NONE (UNSELECTED)', 10, '#64748b');
 
-    addOrthPath([
-      {x: andOut.x, y: andOut.y},
-      {x: OR_GATE_X - 25, y: andOut.y},
-      {x: OR_GATE_X - 25, y: laneY},
-      {x: connectX, y: laneY}
-    ], '#94a3b8', 1.5);
-    addThinTerminal(connectX, laneY, '#94a3b8');
-  });
+    if (andGates.length === 1) {
+      // Single term directly to output Y
+      addWire(andGates[0].x, andGates[0].y, OUTPUT_X - 15, andGates[0].y, '#10b981', 3);
+      addThinTerminal(OUTPUT_X - 15, andGates[0].y, '#10b981');
+      addLabel(OUTPUT_X + 10, andGates[0].y + 5, 'Y', 16, '#10b981', 'start');
+    } else {
+      // Multiple parallel outputs
+      andGates.forEach((gateOut, idx) => {
+        addWire(gateOut.x, gateOut.y, OUTPUT_X - 15, gateOut.y, '#10b981', 2);
+        addThinTerminal(OUTPUT_X - 15, gateOut.y, '#10b981');
+        addLabel(OUTPUT_X + 6, gateOut.y + 4, `Y${idx} [${gateOut.term}]`, 11, '#0f172a', 'start');
+      });
+    }
+  } else {
+    // Stage 2 is active: Combine all Stage 1 outputs
+    const stage2Count = andGates.length;
+    const stage2PinSpacing = stage2Count > 1 ? Math.max(18, Math.min(26, 260 / stage2Count)) : 0;
+    const stage2PinSpan = (stage2Count - 1) * stage2PinSpacing;
+    // Dynamic scaling for Stage 2 gate: grows taller as terms increase!
+    const stage2HalfH = Math.max(28, Math.round((stage2PinSpan / 2) + 16));
+    const stage2Width = Math.max(90, Math.min(160, Math.round(75 + stage2HalfH * 0.55)));
+    const stage2CenterY = (andGates[0].y + andGates[andGates.length - 1].y) / 2;
+    const stage2CenterX = OR_GATE_X + stage2Width / 2;
 
-  const isOrShape3 = ['NOR', 'OR', 'XOR', 'XNOR'].includes(stage3GateType);
-  const hasBubble3 = ['NOR', 'NAND', 'XNOR', 'NOT'].includes(stage3GateType);
+    addLabel(OR_GATE_X + stage2Width / 2, MARGIN_TOP - 25, `${stage2GateType} GATE (STAGE 2)`, 10, '#10b981');
 
-  if (!isOrShape3) {
-    if (stage3GateType === 'NOT') {
+    const isOrShape3 = ['NOR', 'OR', 'XOR', 'XNOR'].includes(stage2GateType);
+    const hasBubble3 = ['NOR', 'NAND', 'XNOR', 'NOT'].includes(stage2GateType);
+    const isNot3 = stage2GateType === 'NOT';
+    const backIndent3 = stage2Width * 0.22;
+
+    // Connect Stage 1 outputs to Stage 2 pins
+    andGates.forEach((andOut, idx) => {
+      const pinY = stage2CenterY - (stage2PinSpan / 2) + idx * stage2PinSpacing;
+      let pinEntryX2 = OR_GATE_X;
+      if (isOrShape3) {
+        const relY2 = (pinY - stage2CenterY) / stage2HalfH;
+        pinEntryX2 = OR_GATE_X + backIndent3 * (1 - relY2 * relY2);
+      }
+
+      addOrthPath([
+        {x: andOut.x, y: andOut.y},
+        {x: OR_GATE_X - 25, y: andOut.y},
+        {x: OR_GATE_X - 25, y: pinY},
+        {x: pinEntryX2, y: pinY}
+      ], '#94a3b8', 1.5);
+      addThinTerminal(pinEntryX2, pinY, '#94a3b8');
+    });
+
+    if (isNot3) {
+      // NOT Gate at Stage 2
       const tri = document.createElementNS(svgNS, 'polygon');
-      tri.setAttribute('points', `${OR_GATE_X},${orCenterY-20} ${OR_GATE_X},${orCenterY+20} ${OR_GATE_X+OR_GATE_WIDTH},${orCenterY}`);
+      tri.setAttribute('points', `${OR_GATE_X},${stage2CenterY - stage2HalfH*0.75} ${OR_GATE_X},${stage2CenterY + stage2HalfH*0.75} ${OR_GATE_X + stage2Width*0.7},${stage2CenterY}`);
       tri.setAttribute('fill', '#fff');
       tri.setAttribute('stroke', '#10b981');
       tri.setAttribute('stroke-width', '2');
       svg.appendChild(tri);
+
+      const bub = document.createElementNS(svgNS, 'circle');
+      bub.setAttribute('cx', OR_GATE_X + stage2Width*0.7 + 4);
+      bub.setAttribute('cy', stage2CenterY);
+      bub.setAttribute('r', '4');
+      bub.setAttribute('fill', '#fff');
+      bub.setAttribute('stroke', '#10b981');
+      bub.setAttribute('stroke-width', '1.5');
+      svg.appendChild(bub);
+      addLabel(OR_GATE_X + stage2Width*0.25, stage2CenterY + 4, 'NOT', 10, '#10b981');
+    } else if (isOrShape3) {
+      // OR / NOR / XOR / XNOR gate at Stage 2
+      const orGate = document.createElementNS(svgNS, 'path');
+      orGate.setAttribute('d', `M ${OR_GATE_X},${stage2CenterY - stage2HalfH} 
+        Q ${OR_GATE_X + stage2Width * 0.5},${stage2CenterY - stage2HalfH} ${OR_GATE_X + stage2Width},${stage2CenterY} 
+        Q ${OR_GATE_X + stage2Width * 0.5},${stage2CenterY + stage2HalfH} ${OR_GATE_X},${stage2CenterY + stage2HalfH} 
+        Q ${OR_GATE_X + backIndent3},${stage2CenterY} ${OR_GATE_X},${stage2CenterY - stage2HalfH} Z`);
+      orGate.setAttribute('fill', '#fff');
+      orGate.setAttribute('stroke', '#10b981');
+      orGate.setAttribute('stroke-width', '2');
+      svg.appendChild(orGate);
+
+      if (stage2GateType === 'XOR' || stage2GateType === 'XNOR') {
+        const curve = document.createElementNS(svgNS, 'path');
+        curve.setAttribute('d', `M ${OR_GATE_X - 7},${stage2CenterY - stage2HalfH} Q ${OR_GATE_X + backIndent3 - 7},${stage2CenterY} ${OR_GATE_X - 7},${stage2CenterY + stage2HalfH}`);
+        curve.setAttribute('fill', 'none');
+        curve.setAttribute('stroke', '#10b981');
+        curve.setAttribute('stroke-width', '2');
+        svg.appendChild(curve);
+      }
+      
+      if (hasBubble3) {
+        const bub = document.createElementNS(svgNS, 'circle');
+        bub.setAttribute('cx', OR_GATE_X + stage2Width + 4);
+        bub.setAttribute('cy', stage2CenterY);
+        bub.setAttribute('r', '4');
+        bub.setAttribute('fill', '#fff');
+        bub.setAttribute('stroke', '#10b981');
+        bub.setAttribute('stroke-width', '1.5');
+        svg.appendChild(bub);
+      }
+      addLabel(stage2CenterX - 5, stage2CenterY + 4, stage2GateType, Math.max(10, Math.min(13, stage2HalfH * 0.45)), '#10b981');
     } else {
+      // AND / NAND gate at Stage 2
+      const straightW3 = stage2Width * 0.45;
+      const arcW3 = stage2Width * 0.55;
       const g = document.createElementNS(svgNS, 'path');
-      g.setAttribute('d', `M ${OR_GATE_X},${orCenterY - 20} 
-        L ${OR_GATE_X + OR_GATE_WIDTH * 0.5},${orCenterY - 20} 
-        A ${OR_GATE_WIDTH * 0.5},20 0 0,1 ${OR_GATE_X + OR_GATE_WIDTH * 0.5},${orCenterY + 20} 
-        L ${OR_GATE_X},${orCenterY + 20} Z`);
+      g.setAttribute('d', `M ${OR_GATE_X},${stage2CenterY - stage2HalfH} 
+        L ${OR_GATE_X + straightW3},${stage2CenterY - stage2HalfH} 
+        A ${arcW3},${stage2HalfH} 0 0,1 ${OR_GATE_X + straightW3},${stage2CenterY + stage2HalfH} 
+        L ${OR_GATE_X},${stage2CenterY + stage2HalfH} Z`);
       g.setAttribute('fill', '#fff');
       g.setAttribute('stroke', '#10b981');
       g.setAttribute('stroke-width', '2');
       svg.appendChild(g);
-    }
-    
-    if (hasBubble3) {
-      const bub = document.createElementNS(svgNS, 'circle');
-      bub.setAttribute('cx', OR_GATE_X + OR_GATE_WIDTH + 4);
-      bub.setAttribute('cy', orCenterY);
-      bub.setAttribute('r', '4');
-      bub.setAttribute('fill', '#fff');
-      bub.setAttribute('stroke', '#10b981');
-      bub.setAttribute('stroke-width', '1.5');
-      svg.appendChild(bub);
-    }
-  } else {
-    const orGate = document.createElementNS(svgNS, 'path');
-    orGate.setAttribute('d', `M ${OR_GATE_X},${orCenterY - 25} 
-      Q ${OR_GATE_X + OR_GATE_WIDTH * 0.5},${orCenterY - 25} ${OR_GATE_X + OR_GATE_WIDTH},${orCenterY} 
-      Q ${OR_GATE_X + OR_GATE_WIDTH * 0.5},${orCenterY + 25} ${OR_GATE_X},${orCenterY + 25} 
-      Q ${OR_GATE_X + OR_GATE_WIDTH * 0.3},${orCenterY} ${OR_GATE_X},${orCenterY - 25} Z`);
-    orGate.setAttribute('fill', '#fff');
-    orGate.setAttribute('stroke', '#10b981');
-    orGate.setAttribute('stroke-width', '2');
-    svg.appendChild(orGate);
 
-    if (stage3GateType === 'XOR' || stage3GateType === 'XNOR') {
-      const curve = document.createElementNS(svgNS, 'path');
-      curve.setAttribute('d', `M ${OR_GATE_X - 6},${orCenterY - 25} Q ${OR_GATE_X + OR_GATE_WIDTH * 0.3 - 6},${orCenterY} ${OR_GATE_X - 6},${orCenterY + 25}`);
-      curve.setAttribute('fill', 'none');
-      curve.setAttribute('stroke', '#10b981');
-      curve.setAttribute('stroke-width', '2');
-      svg.appendChild(curve);
+      if (hasBubble3) {
+        const bub = document.createElementNS(svgNS, 'circle');
+        bub.setAttribute('cx', OR_GATE_X + stage2Width + 4);
+        bub.setAttribute('cy', stage2CenterY);
+        bub.setAttribute('r', '4');
+        bub.setAttribute('fill', '#fff');
+        bub.setAttribute('stroke', '#10b981');
+        bub.setAttribute('stroke-width', '1.5');
+        svg.appendChild(bub);
+      }
+      addLabel(stage2CenterX - 5, stage2CenterY + 4, stage2GateType, Math.max(10, Math.min(13, stage2HalfH * 0.45)), '#10b981');
     }
-    
-    if (hasBubble3) {
-      const bub = document.createElementNS(svgNS, 'circle');
-      bub.setAttribute('cx', OR_GATE_X + OR_GATE_WIDTH + 4);
-      bub.setAttribute('cy', orCenterY);
-      bub.setAttribute('r', '4');
-      bub.setAttribute('fill', '#fff');
-      bub.setAttribute('stroke', '#10b981');
-      bub.setAttribute('stroke-width', '1.5');
-      svg.appendChild(bub);
-    }
+
+    const stage2OutActual = OR_GATE_X + (isNot3 ? stage2Width*0.7 : stage2Width) + (hasBubble3 ? 8 : 0);
+    addThinTerminal(stage2OutActual + 4, stage2CenterY, '#10b981');
+    addWire(stage2OutActual + 4, stage2CenterY, OUTPUT_X - 15, stage2CenterY, '#10b981', 3);
+    addThinTerminal(OUTPUT_X - 15, stage2CenterY, '#10b981');
+    addLabel(OUTPUT_X + 10, stage2CenterY - 12, 'Y', 16, '#10b981', 'start');
   }
-  addLabel(orCenterX - 5, orCenterY + 3, stage3GateType, 10, '#10b981');
-
-  const orOutActual = OR_GATE_X + OR_GATE_WIDTH + (hasBubble3 ? 8 : 0);
-  addThinTerminal(orOutActual + 5, orCenterY, '#10b981');
-  addWire(orOutActual + 5, orCenterY, OUTPUT_X - 20, orCenterY, '#10b981', 3);
-  addLabel(OUTPUT_X, orCenterY - 15, 'Y', 16, '#10b981');
-  addThinTerminal(OUTPUT_X, orCenterY, '#10b981');
 }
 
 // ===== TIMING WAVEFORM =====

@@ -255,10 +255,28 @@
         <label>Target Logic</label>
         <select id="gateMode"><option value="standard">Standard AND / OR (SOP)</option><option value="nand">NAND-only</option><option value="nor">NOR-only</option><option value="custom">Custom</option></select>
         <div id="customGates" style="display:none;margin-top:10px">
-          <label>Gate 1</label>
-          <select id="gate1"><option>XOR</option><option>AND</option><option>OR</option></select>
-          <label style="margin-top:8px">Gate 2</label>
-          <select id="gate2"><option>NOT</option><option>NAND</option><option>XNOR</option></select>
+          <label>Gate 1 (Stage 1)</label>
+          <select id="gate1">
+            <option value="AND" selected>AND</option>
+            <option value="OR">OR</option>
+            <option value="NAND">NAND</option>
+            <option value="NOR">NOR</option>
+            <option value="XOR">XOR</option>
+            <option value="XNOR">XNOR</option>
+            <option value="NOT">NOT</option>
+            <option value="NONE">None (Pass-through)</option>
+          </select>
+          <label style="margin-top:8px">Gate 2 (Stage 2)</label>
+          <select id="gate2">
+            <option value="OR" selected>OR</option>
+            <option value="AND">AND</option>
+            <option value="NAND">NAND</option>
+            <option value="NOR">NOR</option>
+            <option value="XOR">XOR</option>
+            <option value="XNOR">XNOR</option>
+            <option value="NOT">NOT</option>
+            <option value="NONE">None (Unselect Stage 2)</option>
+          </select>
         </div>
 
         <label style="margin-top:12px">Standard Expression</label>
